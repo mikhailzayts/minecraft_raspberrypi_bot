@@ -1,7 +1,9 @@
+import functools
 import html
 import logging
 import os
 import subprocess
+import time
 
 import telebot
 from dotenv import load_dotenv
@@ -35,6 +37,26 @@ def reply_logged(message, text):
         bot.reply_to(message, text, parse_mode="HTML")
     except Exception:
         logger.exception("Failed to send reply")
+
+
+_processed_messages = {}  # (chat_id, message_id) -> timestamp
+
+
+def dedup(handler):
+    """Skip a message if it was already processed (protects from duplicate bot instances)."""
+    @functools.wraps(handler)
+    def wrapper(message, *args, **kwargs):
+        now = time.time()
+        for key, ts in list(_processed_messages.items()):
+            if now - ts > 60:
+                _processed_messages.pop(key, None)
+        key = (message.chat.id, message.message_id)
+        if key in _processed_messages:
+            logger.warning("Duplicate message %s from chat %s ignored", message.message_id, message.chat.id)
+            return
+        _processed_messages[key] = now
+        return handler(message, *args, **kwargs)
+    return wrapper
 
 
 # ----------------------------- Server replies -----------------------------
@@ -169,6 +191,7 @@ BOT_COMMANDS = [
 
 
 @bot.message_handler(commands=["start"])
+@dedup
 def start(message):
     lines = [f"👋 Привет, {message.from_user.first_name}!", "", "Доступные команды:"]
     lines += [f"/{command} — {description}" for command, description in BOT_COMMANDS]
@@ -176,33 +199,33 @@ def start(message):
 
 
 @bot.message_handler(commands=["tps"])
+@dedup
 def tps_command(message):
     reply_logged(message, get_tps_reply())
 
 
 @bot.message_handler(commands=["uptime"])
+@dedup
 def uptime_command(message):
     reply_logged(message, get_uptime_reply())
 
 
 @bot.message_handler(commands=["about"])
+@dedup
 def about_command(message):
     reply_logged(message, get_server_info_reply())
 
 
 @bot.message_handler(commands=["raspberrypi"])
+@dedup
 def raspberrypi_command(message):
     reply_logged(message, get_pi_reply())
 
 
 @bot.message_handler(commands=["online"])
+@dedup
 def online_command(message):
     reply_logged(message, get_online_reply())
-
-
-@bot.message_handler(content_types=["text"])
-def echo(message):
-    bot.reply_to(message, message.text)
 
 
 if __name__ == "__main__":
